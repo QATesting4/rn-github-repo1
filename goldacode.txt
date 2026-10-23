@@ -1,0 +1,1155 @@
+
+===== FILE: tests/component_scm/bitbucket_onprem/test_suite_bitbucket_onprem_integration.py (New File) =====
+
+//import os
+//import sys
+
+import pytest
+
+from infra.cmx.cmx import Cmx as CMX
+from tests.component_scm.bitbucket_onprem.data import Data
+from tfls.tfl import TFL
+
+sys.path.append(os.getcwd())
+
+//class TestSuiteBitbucketOnpremIntegration:
+    """
+    End-to-end test for Bitbucket on-premises integration: import project via UI wizard,
+    SCA triage, application with VEX, net-new and SCA policies, feedback app and profile,
+    branch setup, webhook-triggered scans, policy incidents, feedback profile verification,
+    and report generation/download. Validates the complete Bitbucket integration flow.
+    """
+
+    data: Data = Data
+
+    @pytest.mark.ordered_usefixtures("setup_clean_leftovers", "teardown_safe_cleanup")
+    def test_bitbucket_onprem_integration_full_flow(self, cmx: CMX, TFL: TFL, test_data):
+        """
+        Complete Bitbucket on-prem integration flow: UI import, triage, policies, webhooks, report.
+        """
+        TFL.UI.scm.bitbucket_import.step_import_project_via_bitbucket_wizard(instance_name=test_data.instance_name,
+                                                                              bitbucket_url=test_data.bitbucket_url,
+                                                                              token=cmx.environment.bitbucket_access_token,
+                                                                              org_name=test_data.org_name, repo_name=test_data.repo_name)
+        project_id = TFL.BE.projects.step_get_project_by_name(project_name=test_data.project_name).get("id")
+        TFL.INFRA.general.step_assign_value_to_data(data=test_data, key="project_id", value=project_id)
+        main_scan_count_before = TFL.BE.scans.step_get_scan_count_for_project_branch(project_id=test_data.project_id, branch="main")
+        TFL.BE.performance.step_wait_for_scan_to_be_in_status(project_id=test_data.project_id, branch="main", expected_status=["Completed"],
+                                                              timeout=test_data.scan_timeout)
+        main_scan_count_after = TFL.BE.scans.step_get_scan_count_for_project_branch(project_id=test_data.project_id, branch="main")
+        TFL.INFRA.general.step_assign_value_to_data(data=test_data, key="main_scan_count", value=main_scan_count_after)
+        TFL.UI.projects.scans.step_triage_sca_package_state(project_id=test_data.project_id, branch="main",
+                                                            package_name=test_data.sca_package_name, new_state=test_data.package_state,
+                                                            comment=test_data.triage_comment)
+        TFL.UI.projects.scans.step_triage_sca_risk(project_id=test_data.project_id, branch="main", new_severity=test_data.risk_severity,
+                                                   new_state=test_data.risk_state, note=test_data.triage_comment)
+        TFL.UI.applications.step_create_application_with_project(app_name=test_data.application_name, project_name=test_data.project_name)
+        TFL.UI.applications.step_triage_cve_with_vex(app_name=test_data.application_name, cve_id=test_data.cve_id,
+                                                     state=test_data.cve_state, comment=test_data.triage_comment,
+                                                     vex_state=test_data.vex_state)
+        TFL.UI.applications.step_delete_application(app_name=test_data.application_name)
+        TFL.UI.policy_management.step_create_net_new_policy(policy_name=test_data.net_new_policy_name,
+                                                            severities=test_data.net_new_severities, break_build=True,
+                                                            project_name=test_data.project_name)
+        TFL.UI.policy_management.step_create_sca_scanner_specific_policy(policy_name=test_data.sca_policy_name,
+                                                                          rule_name=test_data.sca_rule_name,
+                                                                          severities=test_data.sca_severities, break_build=True,
+                                                                          project_name=test_data.project_name)
+        TFL.UI.feedback.step_create_email_feedback_app(app_name=test_data.feedback_app_name, states=test_data.feedback_states,
+                                                       severities=test_data.feedback_severities,
+                                                       recipient_email=cmx.environment.feedback_email)
+        TFL.UI.feedback.step_create_feedback_profile(profile_name=test_data.profile_name, feedback_app_name=test_data.feedback_app_name,
+                                                     project_name=test_data.project_name)
+        TFL.UI.projects.settings.step_add_branch_to_project(project_id=test_data.project_id, branch_name=test_data.develop_branch)
+        develop_count_before = TFL.BE.scans.step_get_scan_count_for_project_branch(project_id=test_data.project_id,
+                                                                                     branch=test_data.develop_branch)
+        TFL.BE.scm.bitbucket.step_push_file_to_bitbucket(bb_host=cmx.environment.bitbucket_host,
+                                                          project_key=test_data.bitbucket_project_key,
+                                                          repo_slug=test_data.bitbucket_repo_slug, filename=test_data.pushed_filename,
+                                                          content=test_data.pushed_file_content, branch=test_data.develop_branch,
+                                                          commit_message=test_data.commit_message)
+        TFL.BE.performance.step_wait_for_new_scan_with_origin(project_id=test_data.project_id, branch=test_data.develop_branch,
+                                                              before_count=develop_count_before, expected_origin="Push Webhook",
+                                                              timeout=test_data.scan_timeout)
+        develop_count_after_push = TFL.BE.scans.step_get_scan_count_for_project_branch(project_id=test_data.project_id,
+                                                                                         branch=test_data.develop_branch)
+        pr_id = TFL.BE.scm.bitbucket.step_create_pull_request(bb_host=cmx.environment.bitbucket_host,
+                                                               project_key=test_data.bitbucket_project_key,
+                                                               repo_slug=test_data.bitbucket_repo_slug,
+                                                               from_branch=test_data.develop_branch, to_branch="main",
+                                                               title=test_data.pr_title)
+        TFL.INFRA.general.step_assign_value_to_data(data=test_data, key="pr_id", value=pr_id)
+        TFL.BE.performance.step_wait_for_new_scan_with_origin(project_id=test_data.project_id, branch=test_data.develop_branch,
+                                                              before_count=develop_count_after_push, expected_origin="PR Webhook",
+                                                              timeout=test_data.scan_timeout)
+        TFL.UI.policy_management.step_verify_policy_incident_exists(policy_name=test_data.sca_policy_name,
+                                                                     expected_text=test_data.sca_rule_name)
+        TFL.UI.policy_management.step_verify_policy_incident_exists(policy_name=test_data.net_new_policy_name,
+                                                                     expected_text=test_data.net_new_incident_text)
+        main_count_before_merge = TFL.BE.scans.step_get_scan_count_for_project_branch(project_id=test_data.project_id, branch="main")
+        TFL.BE.scm.bitbucket.step_merge_pull_request(bb_host=cmx.environment.bitbucket_host, project_key=test_data.bitbucket_project_key,
+                                                     repo_slug=test_data.bitbucket_repo_slug, pr_id=test_data.pr_id)
+        TFL.BE.performance.step_wait_for_new_scan_with_origin(project_id=test_data.project_id, branch="main",
+                                                              before_count=main_count_before_merge, expected_origin="Push Webhook",
+                                                              timeout=test_data.scan_timeout)
+        TFL.UI.projects.scans.step_verify_feedback_profile_text_in_scan_details(project_id=test_data.project_id, branch="main",
+                                                                                 profile_name=test_data.profile_name, scanner="sast")
+        TFL.UI.reports.step_generate_and_download_report(project_id=test_data.project_id, branch="main",
+                                                         expected_states_text=test_data.expected_report_states)
+
+    ####################################### Suite setup / teardown ##########################################
+
+    def suite_setup(self, cmx: CMX, TFL: TFL, **kwargs):
+        """
+        Setup phase for the suite.
+        """
+        pass
+
+    def suite_teardown(self, cmx: CMX, TFL: TFL, **kwargs):
+        """
+        Teardown phase for cleaning up created elements in the system during the suite.
+        """
+        pass
+
+    ####################################### Tests setup / teardown ##########################################
+
+    @pytest.fixture()
+    def setup_clean_leftovers(self, cmx: CMX, TFL: TFL, test_data):
+        """
+        Clean up any leftover objects from previous runs before the test starts.
+        """
+        TFL.UI.login_page.step_logout()
+        TFL.UI.login_page.step_login()
+        TFL.BE.projects.step_delete_project_by_name(project_name=test_data.project_name, ignore_failure=True)
+        TFL.BE.scm.bitbucket.step_delete_integrations_by_prefix(integration_prefix=test_data.instance_prefix, ignore_failure=True)
+        TFL.BE.scm.bitbucket.step_decline_open_prs(bb_host=cmx.environment.bitbucket_host, project_key=test_data.bitbucket_project_key,
+                                                    repo_slug=test_data.bitbucket_repo_slug, from_branch=test_data.develop_branch,
+                                                    to_branch="main", ignore_failure=True)
+        yield
+
+    @pytest.fixture()
+    def teardown_safe_cleanup(self, cmx: CMX, TFL: TFL, test_data):
+        """
+        Safe teardown that removes all created objects, never fails on missing items.
+        """
+        yield
+        TFL.UI.applications.step_delete_application(app_name=test_data.application_name, ignore_failure=True)
+        TFL.UI.policy_management.step_delete_policy(policy_name=test_data.net_new_policy_name, ignore_failure=True)
+        TFL.UI.policy_management.step_delete_policy(policy_name=test_data.sca_policy_name, ignore_failure=True)
+        TFL.UI.feedback.step_delete_feedback_app(app_name=test_data.feedback_app_name, ignore_failure=True)
+        TFL.UI.feedback.step_delete_feedback_profile(profile_name=test_data.profile_name, ignore_failure=True)
+        TFL.BE.projects.step_delete_project_by_name(project_name=test_data.project_name, ignore_failure=True)
+        TFL.BE.scm.bitbucket.step_delete_integration(integration_name=test_data.instance_name, ignore_failure=True)
+
+===== FILE: tests/component_scm/bitbucket_onprem/data.py (New File) =====
+
+import datetime
+
+from infra.cmx.cmx import Cmx as CMX
+from infra.general.general import convert_dict_to_object, generate_unique_uuid
+
+class Data:
+    """
+    Data class for the Bitbucket on-prem integration test suite.
+    """
+
+    def __init__(self, cmx: CMX = None):
+        """
+        Initialize test data.
+        """
+        __test__ = False
+        self.cmx = cmx
+
+        run_id = datetime.datetime.now().strftime("%m%d%H%M")
+        self.run_id = run_id
+        self.scan_timeout = 15 * 60
+
+        self.test_bitbucket_onprem_integration_full_flow_data = convert_dict_to_object({
+            "run_id": run_id,
+            "instance_prefix": "rn-test-codegen-",
+            "instance_name": f"rn-test-codegen-{run_id}",
+            "bitbucket_url": f"http://rn{run_id}@{self.cmx.environment.bitbucket_host}",
+            "org_name": "RN-BB-Pro",
+            "repo_name": "RN-BB-Pro/abc_test1",
+            "project_name": "RNBBPRO/RN-BB-Pro/abc_test1",
+            "project_id": None,
+            "bitbucket_project_key": "RNBBPRO",
+            "bitbucket_repo_slug": "abc_test1",
+            "sca_package_name": "mysql:mysql-connector-java",
+            "package_state": "Muted",
+            "triage_comment": "test triage",
+            "risk_severity": "High",
+            "risk_state": "Confirmed",
+            "application_name": f"rn-test-app-codegen-{run_id}",
+            "cve_id": "CVE-2015-2575",
+            "cve_state": "Confirmed",
+            "vex_state": "InTriage",
+            "net_new_policy_name": f"rn-net-new-policy-{run_id}",
+            "net_new_severities": ["Medium", "Low", "Informative"],
+            "net_new_incident_text": "New vulnerabilities of",
+            "sca_policy_name": f"rn-test-sca-policy-{run_id}",
+            "sca_rule_name": "sca-rule",
+            "sca_severities": ["High", "Medium"],
+            "feedback_app_name": f"rn-email-FA-test-{run_id}",
+            "feedback_states": ["To Verify"],
+            "feedback_severities": ["Low", "Info"],
+            "profile_name": f"rn-test-profile-{run_id}",
+            "develop_branch": "develop",
+            "pushed_filename": f"rn_test_{run_id}.txt",
+            "pushed_file_content": f"run {run_id}",
+            "commit_message": f"Add rn_test_{run_id}.txt",
+            "pr_title": f"Test PR {run_id}",
+            "pr_id": None,
+            "main_scan_count": None,
+            "expected_report_states": "To Verify, Confirmed, Urgent",
+            "scan_timeout": 15 * 60,
+        })
+
+===== FILE: tfls/ui/scm/bitbucket_import/bitbucket_import_ops.py (NEW FILE) =====
+
+import re
+
+from infra.cmx.cmx import Cmx as CMX
+from infra.tfls.base_tfl import BaseTfl
+
+class BitbucketImportOps(BaseTfl):
+
+    def __init__(self, cmx: CMX = None, tfls=None, logger=None):
+        super().__init__(cmx=cmx, logger=logger, tfls=tfls)
+
+    @BaseTfl.step_wrapper(title="step_import_project_via_bitbucket_wizard",
+                          error="Failed to import project via Bitbucket wizard")
+    def step_import_project_via_bitbucket_wizard(self, instance_name: str, bitbucket_url: str, token: str,
+                                                 org_name: str, repo_name: str, **kwargs):
+        """
+        Import a project through the Bitbucket UI wizard: New Project > Code Repository Integration >
+        Bitbucket > add configuration > select organization > select repository > advance through wizard.
+        :return: None
+        """
+        self.logger.info(f"Importing project via Bitbucket wizard: instance {instance_name}, org {org_name}, repo {repo_name}")
+        page = self.cmx.ui.page
+        page.goto(f"{self.cmx.environment.server_url}/applicationsAndProjects/projects", wait_until="domcontentloaded")
+        page.get_by_role("button", name="New", exact=True).click()
+        page.get_by_role("menuitem", name=re.compile("New Project - Code Repository")).click()
+        self._handle_custom_setup_if_present(page)
+        page.get_by_role("radio", name=re.compile(r"^Bitbucket, \d+ of")).click()
+        page.get_by_role("button", name="+ Add Configuration").click()
+        page.get_by_role("textbox", name="* Instance Name").fill(instance_name)
+        page.get_by_role("textbox", name="* URL").fill(bitbucket_url)
+        page.get_by_role("textbox", name="* Token").fill(token)
+        page.get_by_role("button", name="Save & Continue").click()
+        page.get_by_role("textbox", name="Search").fill("rn")
+        self._check_or_click_org(page, org_name)
+        page.get_by_role("button", name="Select Organization").click()
+        self._check_or_click_repo(page, repo_name)
+        page.get_by_role("button", name="Select Repositories").click()
+        self._advance_through_wizard_until_create(page)
+        page.expect_to_have_text(page.get_by_role("alert").first, re.compile(".+"), timeout=60_000)
+        self.logger.info("   import started: " + page.get_by_role("alert").first.inner_text().replace("\n", " ")[:120])
+
+    def _handle_custom_setup_if_present(self, page):
+        """
+        Click Custom Setup if it appears (some environments have it, others do not).
+        :return: None
+        """
+        try:
+            custom_setup = page.get_by_text("Custom Setup")
+            custom_setup.wait_for(state="visible", timeout=5_000)
+            custom_setup.click()
+            self.logger.info("   selected Custom Setup option")
+        except Exception as err:
+            self.logger.info(f"   no Custom Setup option on this environment: {str(err).splitlines()[0][:100]}")
+
+    def _check_or_click_org(self, page, org_name):
+        """
+        Select the organization by checking it (checkbox) or clicking it (label), whichever is present.
+        :return: None
+        """
+        try:
+            page.get_by_text(org_name, exact=True).check(timeout=5_000)
+        except Exception as err:
+            self.logger.info(f"   org checkbox not available, clicking text: {str(err).splitlines()[0][:100]}")
+            page.get_by_text(org_name, exact=True).click()
+
+    def _check_or_click_repo(self, page, repo_name):
+        """
+        Select the repository by checking it (checkbox) or clicking it (label), whichever is present.
+        :return: None
+        """
+        try:
+            page.get_by_text(repo_name).check(timeout=5_000)
+        except Exception as err:
+            self.logger.info(f"   repo checkbox not available, clicking text: {str(err).splitlines()[0][:100]}")
+            page.get_by_text(repo_name).click()
+
+    def _advance_through_wizard_until_create(self, page):
+        """
+        Keep advancing through wizard steps (Next / Create Project) until the final alert appears.
+        :return: None
+        """
+        next_btn = page.get_by_role("button", name="Next", exact=True)
+        create_btn = page.get_by_role("button", name="Create Project")
+        alert = page.get_by_role("alert")
+        repo_checks = page.locator("#code-repository-flows-mfe-1769006270777-3")
+        for _ in range(10):
+            if create_btn.is_visible():
+                create_btn.click()
+                break
+            if next_btn.is_visible():
+                if not next_btn.is_enabled():
+                    self._try_enable_next_via_repo_checks(repo_checks, next_btn)
+                next_btn.click()
+            if alert.first.is_visible():
+                break
+            page.wait_for_timeout(1_500)
+
+    def _try_enable_next_via_repo_checks(self, repo_checks, next_btn):
+        """
+        Attempt to enable the Next button by clicking repository checkboxes.
+        :return: None
+        """
+        for idx in (1, 0, -1):
+            try:
+                repo_checks.nth(idx).click(timeout=3_000)
+            except Exception:
+                continue
+            if next_btn.is_enabled():
+                break
+
+===== FILE: tfls/ui/projects/scans/scans_ops.py (APPEND — new step, existing file) =====
+
+    @BaseTfl.step_wrapper(title="step_triage_sca_package_state", error="Failed to triage SCA package state")
+    def step_triage_sca_package_state(self, project_id: str, branch: str, package_name: str, new_state: str,
+                                      comment: str, **kwargs):
+        """
+        Navigate to the newest scan's SCA results, find the package, change its state, and verify the success toast.
+        :return: None
+        """
+        self.logger.info(f"Triaging SCA package {package_name} to state {new_state} on project {project_id}, branch {branch}")
+        page = self.cmx.ui.page
+        page.goto(f"{self.cmx.environment.server_url}/projects/{project_id}/scans?branch={branch}",
+                  wait_until="domcontentloaded")
+        scan_rows = page.get_by_role("row", name=re.compile("Copy scan ID"))
+        scan_rows.first.wait_for(state="visible", timeout=15_000)
+        scan_rows.first.click()
+        page.get_by_test_id("sca-scan-card").get_by_role("button", name="Results").click()
+        page.get_by_text(re.compile(package_name)).first.click()
+        page.get_by_test_id("state-button").click()
+        choose_dropdown(page, page.locator("#cxui-1760103804517-7").last, new_state)
+        page.get_by_test_id("comment-textbox").fill(comment)
+        page.get_by_test_id("drawer-confirm-button").click()
+        page.expect_to_have_text(page.get_by_text("The state was updated").first, "The state was updated", timeout=20_000)
+
+    @BaseTfl.step_wrapper(title="step_triage_sca_risk", error="Failed to triage SCA risk")
+    def step_triage_sca_risk(self, project_id: str, branch: str, new_severity: str, new_state: str, note: str,
+                             **kwargs):
+        """
+        Navigate to the Risks tab of the SCA scan results, edit the first 'To Verify' risk, and recalculate.
+        :return: None
+        """
+        self.logger.info(f"Triaging SCA risk to severity {new_severity}, state {new_state} on project {project_id}, branch {branch}")
+        page = self.cmx.ui.page
+        page.get_by_test_id("ant-tabs-tab-link-Risks").click()
+        page.get_by_text("To Verify").first.click()
+        page.get_by_role("button", name="Edit").click()
+        choose_dropdown(page, page.get_by_test_id("triage-rating-select").locator("#cxui-1760103804517-7"),
+                        new_severity)
+        choose_dropdown(page, page.get_by_test_id("triage-state-select").locator("#cxui-1760103804517-7"),
+                        new_state)
+        page.get_by_test_id("triage-note-textarea").fill(note)
+        page.get_by_test_id("drawer-confirm-button").click()
+        page.expect_to_have_text(page.get_by_text("Risk details saved").first, "Risk details saved", timeout=20_000)
+        page.get_by_role("button", name="Recalculate").click()
+
+    @BaseTfl.step_wrapper(title="step_verify_feedback_profile_text_in_scan_details",
+                          error="Failed to verify feedback profile text")
+    def step_verify_feedback_profile_text_in_scan_details(self, project_id: str, branch: str, profile_name: str,
+                                                          scanner: str, **kwargs):
+        """
+        Navigate to the newest scan on the branch, open the scanner's Actions > More Details, and verify
+        the feedback profile text is present.
+        :return: None
+        """
+        self.logger.info(f"Verifying feedback profile text for profile {profile_name} in scan details of project {project_id}, branch {branch}")
+        page = self.cmx.ui.page
+        page.goto(f"{self.cmx.environment.server_url}/projects/{project_id}/scans?branch={branch}",
+                  wait_until="domcontentloaded")
+        scan_rows = page.get_by_role("row", name=re.compile("Copy scan ID"))
+        scan_rows.first.wait_for(state="visible", timeout=15_000)
+        scan_rows.first.click()
+        page.get_by_test_id(f"{scanner.lower()}-scan-card").get_by_role("img", name="Actions").click()
+        page.get_by_role("button", name="More Details").click()
+        page.expect_to_have_text(page.get_by_text(f"Handling Feedback profile '{profile_name}'", exact=True),
+                                 f"Handling Feedback profile '{profile_name}'", timeout=60_000)
+        self.logger.info("   feedback profile text found in scan details")
+        close_details_drawer_if_open(page)
+
+    def choose_dropdown(page, trigger, option_text, attempts=3):
+        """
+        Custom dropdown helper: click the control, wait for the option list, click the option.
+        :return: None
+        """
+        try:
+            option_locator = (page.get_by_role("option", name=option_text)
+                              .or_(page.get_by_title(option_text, exact=True))
+                              .filter(visible=True).first)
+            for _ in range(attempts):
+                trigger.click()
+                try:
+                    option_locator.wait_for(state="visible", timeout=4_000)
+                    option_locator.click()
+                    return
+                except Exception:
+                    page.keyboard.press("Escape")
+            raise RuntimeError(f"Dropdown option {option_text!r} did not open")
+        except Exception as err:
+            raise RuntimeError(f"choose_dropdown failed: {str(err).splitlines()[0][:150]}")
+
+    def close_details_drawer_if_open(page):
+        """
+        Attempt to close the scan details drawer if it is visible.
+        :return: None
+        """
+        try:
+            page.get_by_role("button", name="Close").first.click(timeout=3_000)
+        except Exception as err:
+            self.logger.info(f"   drawer close button not found: {str(err).splitlines()[0][:100]}")
+
+===== FILE: tfls/ui/applications/applications_ops.py (NEW FILE) =====
+
+import re
+
+from infra.cmx.cmx import Cmx as CMX
+from infra.tfls.base_tfl import BaseTfl
+
+class ApplicationsOps(BaseTfl):
+
+    def __init__(self, cmx: CMX = None, tfls=None, logger=None):
+        super().__init__(cmx=cmx, logger=logger, tfls=tfls)
+
+    @BaseTfl.step_wrapper(title="step_create_application_with_project",
+                          error="Failed to create application with project")
+    def step_create_application_with_project(self, app_name: str, project_name: str, **kwargs):
+        """
+        Create an application via the UI wizard, selecting the given project by name.
+        :return: None
+        """
+        self.logger.info(f"Creating application {app_name} with project {project_name}")
+        page = self.cmx.ui.page
+        page.goto(f"{self.cmx.environment.server_url}/applicationsAndProjects/applications",
+                  wait_until="domcontentloaded")
+        page.get_by_role("button", name="New", exact=True).click()
+        page.get_by_role("menuitem", name=re.compile("New Application")).click()
+        page.get_by_role("textbox", name="Application Name").fill(app_name)
+        page.get_by_role("button", name="Next", exact=True).click()
+        by_name = page.get_by_role("textbox", name=re.compile("By Name"))
+        if not by_name.is_visible():
+            page.locator(".by-name-select-wrap .ant-select").first.click()
+        by_name.fill("rnbbpro")
+        page.get_by_role("option", name=project_name).click()
+        page.get_by_role("button", name="Create an Application").click()
+        page.expect_to_have_text(page.get_by_text("Application was successfully").first, "Application was successfully",
+                                 timeout=20_000)
+
+    @BaseTfl.step_wrapper(title="step_triage_cve_with_vex", error="Failed to triage CVE with VEX")
+    def step_triage_cve_with_vex(self, app_name: str, cve_id: str, state: str, comment: str, vex_state: str,
+                                 **kwargs):
+        """
+        Navigate to the application's Overview, find the CVE risk, edit it with the given state, comment,
+        and VEX state, then verify the success toast.
+        :return: None
+        """
+        self.logger.info(f"Triaging CVE {cve_id} in application {app_name} with VEX state {vex_state}")
+        page = self.cmx.ui.page
+        open_applications_search(page, self.cmx.environment.server_url).fill(app_name)
+        page.get_by_role("button", name="Overview").first.click()
+        page.get_by_text(re.compile(cve_id)).first.click()
+        page.get_by_role("button", name="View").click()
+        page.get_by_role("button", name="Edit").click()
+        choose_dropdown(page, page.locator("#cx-select-value-state #cxui-1760103804517-7"), state)
+        page.get_by_test_id("comment-textbox").fill(comment)
+        vex_switch_on(page)
+        choose_dropdown(page, page.locator("#cx-select-value-vex-state #cxui-1760103804517-7"), vex_state)
+        page.get_by_test_id("drawer-confirm-button").click()
+        page.expect_to_have_text(page.get_by_text("Risk details saved").first, "Risk details saved", timeout=20_000)
+
+    @BaseTfl.step_wrapper(title="step_delete_application", error="Failed to delete application")
+    def step_delete_application(self, app_name: str, **kwargs):
+        """
+        Search for the application by name, open its actions menu, and delete it.
+        :return: None
+        """
+        self.logger.info(f"Deleting application {app_name}")
+        page = self.cmx.ui.page
+        open_applications_search(page, self.cmx.environment.server_url).fill(app_name)
+        page.get_by_role("button", name="Open actions menu").first.click()
+        page.get_by_text("Delete Application").click()
+        page.locator('[data-test="ok"]').click()
+        page.expect_to_have_text(page.get_by_text("Application(s) deleted").first, "Application(s) deleted",
+                                 timeout=20_000)
+
+    def open_applications_search(page, server_url):
+        """
+        Navigate to the applications page and return the search input locator.
+        :return: search input locator
+        """
+        try:
+            page.goto(f"{server_url}/applicationsAndProjects/applications", wait_until="domcontentloaded")
+            box = page.get_by_test_id("search-input")
+            if not box.is_visible():
+                page.get_by_role("button", name="Search").click()
+            return box
+        except Exception as err:
+            raise RuntimeError(f"open_applications_search failed: {str(err).splitlines()[0][:150]}")
+
+    def choose_dropdown(page, trigger, option_text, attempts=3):
+        """
+        Custom dropdown helper: click the control, wait for the option list, click the option.
+        :return: None
+        """
+        try:
+            option_locator = (page.get_by_role("option", name=option_text)
+                              .or_(page.get_by_title(option_text, exact=True))
+                              .filter(visible=True).first)
+            for _ in range(attempts):
+                trigger.click()
+                try:
+                    option_locator.wait_for(state="visible", timeout=4_000)
+                    option_locator.click()
+                    return
+                except Exception:
+                    page.keyboard.press("Escape")
+            raise RuntimeError(f"Dropdown option {option_text!r} did not open")
+        except Exception as err:
+            raise RuntimeError(f"choose_dropdown failed: {str(err).splitlines()[0][:150]}")
+
+    def vex_switch_on(page):
+        """
+        Turn on the VEX switch if it is not already on.
+        :return: None
+        """
+        try:
+            sw = page.get_by_role("switch", name=re.compile("Provide VEX Information"))
+            try:
+                sw.wait_for(state="visible", timeout=5_000)
+                if sw.get_attribute("aria-checked") != "true":
+                    sw.click()
+            except Exception:
+                page.locator("#cxui-1760103804829-9").click()
+        except Exception as err:
+            raise RuntimeError(f"vex_switch_on failed: {str(err).splitlines()[0][:150]}")
+
+===== FILE: tfls/ui/policy_management/policy_management_ops.py (NEW FILE) =====
+
+import re
+
+from infra.cmx.cmx import Cmx as CMX
+from infra.tfls.base_tfl import BaseTfl
+
+class PolicyManagementOps(BaseTfl):
+
+    def __init__(self, cmx: CMX = None, tfls=None, logger=None):
+        super().__init__(cmx=cmx, logger=logger, tfls=tfls)
+
+    @BaseTfl.step_wrapper(title="step_create_net_new_policy", error="Failed to create net-new policy")
+    def step_create_net_new_policy(self, policy_name: str, severities: list, break_build: bool, project_name: str,
+                                   **kwargs):
+        """
+        Create a net-new policy via the UI wizard: select severities, enable break-build, assign to project.
+        :return: None
+        """
+        self.logger.info(f"Creating net-new policy {policy_name} with severities {severities}, break_build={break_build}")
+        page = self.cmx.ui.page
+        open_policies(page, self.cmx.environment.server_url)
+        page.get_by_role("button", name="Create New Policy").click()
+        page.get_by_role("textbox", name="Policy Name").fill(policy_name)
+        page.get_by_role("button", name="Save & Continue").click()
+        for sev in severities:
+            page.locator("div").filter(has_text=re.compile(rf"^{sev}$")).first.click()
+        if break_build:
+            page.get_by_role("switch", name=re.compile("When activated, the build")).click()
+        assign_project_dialog(page, project_name, by_checkbox=True)
+
+    @BaseTfl.step_wrapper(title="step_create_sca_scanner_specific_policy",
+                          error="Failed to create SCA scanner-specific policy")
+    def step_create_sca_scanner_specific_policy(self, policy_name: str, rule_name: str, severities: list,
+                                                break_build: bool, project_name: str, **kwargs):
+        """
+        Create an SCA scanner-specific policy via the UI wizard: select SCA scanner, add a rule with
+        severity criteria, enable break-build, assign to project.
+        :return: None
+        """
+        self.logger.info(f"Creating SCA scanner-specific policy {policy_name} with rule {rule_name}, severities {severities}")
+        page = self.cmx.ui.page
+        open_policies(page, self.cmx.environment.server_url)
+        page.get_by_role("button", name="Create New Policy").click()
+        page.get_by_role("textbox", name="Policy Name").fill(policy_name)
+        page.get_by_role("button", name="Save & Continue").click()
+        page.get_by_role("radio", name="Scanner-specific rules", exact=True).check()
+        page.get_by_role("combobox", name="Scanner").click()
+        sca_option = page.get_by_role("option", name="SCA", exact=True)
+        if sca_option.count():
+            sca_option.first.click()
+        else:
+            page.get_by_text("SCA", exact=True).nth(3).click()
+        page.get_by_role("button", name="Add rule").click()
+        page.get_by_role("textbox", name="Rule Name *").fill(rule_name)
+        page.get_by_role("group", name=re.compile("And has a single vulnerability")).locator(
+            "#policy-rule-management-1774372874916-1").click()
+        page.get_by_role("combobox", name="Select").click()
+        page.get_by_role("option", name="Severity level is").click()
+        page.locator(".cx-select-selection-overflow").first.click()
+        for sev in severities:
+            page.locator("div").filter(has_text=re.compile(rf"^{sev}$")).first.click()
+        page.get_by_role("button", name="Add Rule", exact=True).click()
+        if break_build:
+            page.get_by_role("switch", name=re.compile("When activated, the build")).click()
+        assign_project_dialog(page, project_name, by_checkbox=False)
+
+    @BaseTfl.step_wrapper(title="step_verify_policy_incident_exists", error="Failed to verify policy incident")
+    def step_verify_policy_incident_exists(self, policy_name: str, expected_text: str, **kwargs):
+        """
+        Navigate to the Incidents tab, search for the policy by name, and verify the expected incident text is visible.
+        :return: None
+        """
+        self.logger.info(f"Verifying incident for policy {policy_name} contains text {expected_text}")
+        page = self.cmx.ui.page
+        open_policies(page, self.cmx.environment.server_url)
+        page.get_by_role("tab", name=re.compile("Incidents")).click()
+        page.get_by_test_id("search-input").fill(policy_name)
+        page.expect_to_have_text(page.get_by_text(expected_text).first, expected_text, timeout=60_000)
+        self.logger.info(f"   incident ok for {policy_name}: {expected_text}")
+        page.get_by_role("button", name="Clear input").click()
+
+    @BaseTfl.step_wrapper(title="step_delete_policy", error="Failed to delete policy")
+    def step_delete_policy(self, policy_name: str, **kwargs):
+        """
+        Navigate to the Policies tab, search for the policy by name, open the kebab menu, and delete it.
+        :return: None
+        """
+        self.logger.info(f"Deleting policy {policy_name}")
+        page = self.cmx.ui.page
+        open_policies(page, self.cmx.environment.server_url)
+        page.get_by_role("tab", name=re.compile(r"^Policies")).click()
+        page.get_by_test_id("search-input").fill(policy_name)
+        page.get_by_role("button", name=re.compile("Toggle kebab-menu")).first.click()
+        page.get_by_text("Delete", exact=True).click()
+        page.locator('[data-test="ok"]').click()
+        page.wait_for_timeout(1_500)
+        self.logger.info(f"   policy deleted: {policy_name}")
+
+    def open_policies(page, server_url):
+        """
+        Navigate to the policy management page.
+        :return: None
+        """
+        try:
+            page.goto(f"{server_url}/policy-management?currentPoliciesPage=1&policiesPageSize=25",
+                      wait_until="domcontentloaded")
+        except Exception as err:
+            raise RuntimeError(f"open_policies failed: {str(err).splitlines()[0][:150]}")
+
+    def assign_project_dialog(page, project_name, by_checkbox):
+        """
+        Assign the policy to the project via the assignment dialog.
+        :return: None
+        """
+        try:
+            page.get_by_role("button", name="Assign to Projects").click()
+            page.get_by_test_id("search-input").fill("rnbbpro")
+            if by_checkbox:
+                page.get_by_label("", exact=True).nth(1).check()
+            else:
+                page.get_by_role("button", name=project_name).click()
+            page.get_by_role("button", name="Assign Projects").click()
+            page.get_by_role("button", name="Create Policy").click()
+            page.expect_to_have_text(page.get_by_text("Successfully Created Policy").first, "Successfully Created Policy",
+                                     timeout=20_000)
+        except Exception as err:
+            raise RuntimeError(f"assign_project_dialog failed: {str(err).splitlines()[0][:150]}")
+
+===== FILE: tfls/ui/feedback/feedback_ops.py (NEW FILE) =====
+
+from infra.cmx.cmx import Cmx as CMX
+from infra.tfls.base_tfl import BaseTfl
+
+class FeedbackOps(BaseTfl):
+
+    def __init__(self, cmx: CMX = None, tfls=None, logger=None):
+        super().__init__(cmx=cmx, logger=logger, tfls=tfls)
+
+    @BaseTfl.step_wrapper(title="step_create_email_feedback_app", error="Failed to create email feedback app")
+    def step_create_email_feedback_app(self, app_name: str, states: list, severities: list, recipient_email: str,
+                                       **kwargs):
+        """
+        Create an email feedback app via the UI wizard: select states, severities, and recipient email.
+        :return: None
+        """
+        self.logger.info(f"Creating email feedback app {app_name} with states {states}, severities {severities}, email {recipient_email}")
+        page = self.cmx.ui.page
+        page.goto(f"{self.cmx.environment.server_url}/policy-management", wait_until="domcontentloaded")
+        page.get_by_role("link", name="Feedback Apps").click()
+        page.get_by_label("Email").get_by_label("Configuration").click()
+        page.get_by_role("textbox", name="Feedback App Name").fill(app_name)
+        page.get_by_role("textbox", name="Select states").click()
+        for state in states:
+            page.locator("span").filter(has_text=state).first.check()
+        page.locator("div").filter(has_text="Settings & Trigger").nth(2).click()
+        for sev in severities:
+            page.locator("span").filter(has_text=sev).first.check()
+        page.get_by_role("button", name="Next >").click()
+        combo = page.get_by_role("combobox", name="Select")
+        combo.fill(recipient_email)
+        page.get_by_text(recipient_email).nth(2).click()
+        page.get_by_role("button", name="Save").click()
+        page.expect_to_have_text(page.get_by_text("Feedback App created").first, "Feedback App created", timeout=20_000)
+
+    @BaseTfl.step_wrapper(title="step_create_feedback_profile", error="Failed to create feedback profile")
+    def step_create_feedback_profile(self, profile_name: str, feedback_app_name: str, project_name: str, **kwargs):
+        """
+        Create a feedback profile via the UI wizard: select the feedback app and project.
+        :return: None
+        """
+        self.logger.info(f"Creating feedback profile {profile_name} with app {feedback_app_name}, project {project_name}")
+        page = self.cmx.ui.page
+        open_profiles_tab(page, self.cmx.environment.server_url)
+        page.get_by_role("button", name="Create Profile").click()
+        page.get_by_role("textbox", name="Feedback Profile Name").fill(profile_name)
+        page.get_by_role("button", name="Next >").click()
+        page.get_by_role("textbox", name="Search", exact=True).fill(feedback_app_name)
+        page.get_by_label("", exact=True).check()
+        page.get_by_role("button", name="Next >").click()
+        page.get_by_role("textbox", name="Search", exact=True).fill("rnbbpro")
+        page.get_by_label("", exact=True).check()
+        page.get_by_role("button", name="Save").click()
+        page.expect_to_have_text(page.get_by_text("Feedback Profile created").first, "Feedback Profile created",
+                                 timeout=20_000)
+
+    @BaseTfl.step_wrapper(title="step_delete_feedback_app", error="Failed to delete feedback app")
+    def step_delete_feedback_app(self, app_name: str, **kwargs):
+        """
+        Navigate to Feedback Apps, search for the app, and delete it.
+        :return: None
+        """
+        self.logger.info(f"Deleting feedback app {app_name}")
+        page = self.cmx.ui.page
+        page.goto(f"{self.cmx.environment.server_url}/policy-management", wait_until="domcontentloaded")
+        page.get_by_role("link", name="Feedback Apps").click()
+        page.get_by_text("Apps", exact=True).click()
+        page.get_by_test_id("search-input").fill(app_name)
+        page.get_by_role("button", name="Delete").first.click()
+        page.locator('[data-test="ok"]').click()
+        page.expect_to_have_text(page.get_by_text("Feedback App deleted").first, "Feedback App deleted", timeout=20_000)
+
+    @BaseTfl.step_wrapper(title="step_delete_feedback_profile", error="Failed to delete feedback profile")
+    def step_delete_feedback_profile(self, profile_name: str, **kwargs):
+        """
+        Navigate to Feedback Profiles, search for the profile, and delete it.
+        :return: None
+        """
+        self.logger.info(f"Deleting feedback profile {profile_name}")
+        page = self.cmx.ui.page
+        open_profiles_tab(page, self.cmx.environment.server_url)
+        page.get_by_test_id("search-input").fill(profile_name)
+        page.get_by_role("button", name="Delete").first.click()
+        page.locator('[data-test="ok"]').click()
+        page.wait_for_timeout(1_500)
+        self.logger.info("   feedback profile deleted")
+
+    def open_profiles_tab(page, server_url):
+        """
+        Navigate to the Feedback Profiles tab.
+        :return: None
+        """
+        try:
+            page.goto(f"{server_url}/policy-management", wait_until="domcontentloaded")
+            page.get_by_role("link", name="Feedback Apps").click()
+            try:
+                page.locator("#cxui-1760103817771-4").click(timeout=5_000)
+            except Exception:
+                page.get_by_text("Profiles", exact=True).click()
+        except Exception as err:
+            raise RuntimeError(f"open_profiles_tab failed: {str(err).splitlines()[0][:150]}")
+
+===== FILE: tfls/ui/projects/settings/settings_ops.py (NEW FILE) =====
+
+from infra.cmx.cmx import Cmx as CMX
+from infra.tfls.base_tfl import BaseTfl
+
+class SettingsOps(BaseTfl):
+
+    def __init__(self, cmx: CMX = None, tfls=None, logger=None):
+        super().__init__(cmx=cmx, logger=logger, tfls=tfls)
+
+    @BaseTfl.step_wrapper(title="step_add_branch_to_project", error="Failed to add branch to project")
+    def step_add_branch_to_project(self, project_id: str, branch_name: str, **kwargs):
+        """
+        Navigate to the project settings Code Repository tab, add the given branch, and save.
+        :return: None
+        """
+        self.logger.info(f"Adding branch {branch_name} to project {project_id}")
+        page = self.cmx.ui.page
+        page.goto(f"{self.cmx.environment.server_url}/projects/{project_id}/settings?branch=main",
+                  wait_until="domcontentloaded")
+        page.get_by_role("tab", name="Code Repository").click()
+        page.get_by_role("button", name="+ Add Branch").click()
+        page.get_by_role("combobox", name="Select").nth(2).click()
+        page.get_by_text(branch_name).nth(1).click()
+        page.get_by_role("button", name="Save").click()
+        page.wait_for_timeout(2_000)
+
+===== FILE: tfls/ui/reports/reports_ops.py (NEW FILE) =====
+
+from infra.cmx.cmx import Cmx as CMX
+from infra.tfls.base_tfl import BaseTfl
+
+class ReportsOps(BaseTfl):
+
+    def __init__(self, cmx: CMX = None, tfls=None, logger=None):
+        super().__init__(cmx=cmx, logger=logger, tfls=tfls)
+
+    @BaseTfl.step_wrapper(title="step_generate_and_download_report", error="Failed to generate and download report")
+    def step_generate_and_download_report(self, project_id: str, branch: str, expected_states_text: str, **kwargs):
+        """
+        Navigate to the project overview, generate the report, verify the expected Results State text,
+        wait for the Download button, and download the report.
+        :return: None
+        """
+        self.logger.info(f"Generating and downloading report for project {project_id}, branch {branch}")
+        page = self.cmx.ui.page
+        page.goto(f"{self.cmx.environment.server_url}/projects/{project_id}/overview?branch={branch}",
+                  wait_until="domcontentloaded")
+        gen = page.get_by_role("button", name="Generate Report")
+        if gen.count():
+            gen.first.click()
+        else:
+            page.locator("#reporting-mfe-1762442005074-9").click()
+        page.expect_to_have_text(page.get_by_text(expected_states_text, exact=True).first, expected_states_text,
+                                 timeout=15_000)
+        page.get_by_role("button", name="Generate", exact=True).click()
+        download_btn = page.get_by_role("button", name="Download")
+        page.expect_to_be_visible(download_btn.first, timeout=180_000)
+        with page.expect_download(timeout=60_000) as info:
+            download_btn.first.click()
+        self.logger.info(f"   downloaded: {info.value.suggested_filename}")
+
+===== FILE: tfls/backend/scans/scans_ops.py (APPEND — new step, existing file) =====
+
+    @BaseTfl.step_wrapper(title="step_get_scan_count_for_project_branch", error="Failed to get scan count")
+    def step_get_scan_count_for_project_branch(self, project_id: str, branch: str, **kwargs):
+        """
+        Get the current number of scans for the project on the given branch.
+        :return: total count of scans for the project on the branch
+        """
+        self.logger.info(f"Getting scan count for project {project_id}, branch {branch}")
+        scans_response = self.cmx.rest.scans.get_list_of_scans(params={"project-id": project_id, "branch": branch, "limit": 1})
+        if scans_response.status_code not in [200, 201]:
+            raise ValueError(f"Failed to get scans for project {project_id}, branch {branch}: {scans_response.text}")
+        total_count = scans_response.json().get("totalCount", 0)
+        self.logger.info(f"   scan count: {total_count}")
+        return total_count
+
+===== FILE: tfls/backend/performance/performance_ops.py (APPEND — new step, existing file) =====
+
+    @BaseTfl.step_wrapper(title="step_wait_for_new_scan_with_origin", error="Failed to wait for new scan with origin")
+    def step_wait_for_new_scan_with_origin(self, project_id: str, branch: str, before_count: int, expected_origin: str,
+                                           timeout: int, **kwargs):
+        """
+        Poll until the scan list for the project/branch has more scans than before_count and the newest scan's
+        origin matches the expected_origin, then wait for that scan to reach Completed status.
+        :return: None
+        """
+        self.logger.info(f"Waiting for a new scan on project {project_id}, branch {branch} with origin {expected_origin}")
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            scans_response = self.cmx.rest.scans.get_list_of_scans(params={"project-id": project_id, "branch": branch,
+                                                                            "limit": 10, "offset": 0})
+            if scans_response.status_code not in [200, 201]:
+                time.sleep(15)
+                continue
+            scans_data = scans_response.json()
+            scans_list = scans_data.get("scans", [])
+            total_count = scans_data.get("totalCount", 0)
+            if total_count > before_count and scans_list:
+                newest_scan = scans_list[0]
+                scan_origin = newest_scan.get("origin", "").lower()
+                if expected_origin.lower() in scan_origin:
+                    scan_id = newest_scan.get("id")
+                    self.logger.info(f"   found new scan {scan_id} with origin {expected_origin}")
+                    self.tfls.BE.performance.step_wait_for_scan_to_be_in_status(project_id=project_id, branch=branch,
+                                                                                 expected_status=["Completed"],
+                                                                                 timeout=timeout)
+                    return
+            time.sleep(15)
+        raise TimeoutError(f"No new completed scan with origin {expected_origin} within {timeout}s")
+
+===== FILE: tfls/backend/scm/bitbucket/bitbucket_ops.py (NEW FILE) =====
+
+import base64
+import json
+
+from infra.cmx.cmx import Cmx as CMX
+from infra.tfls.base_tfl import BaseTfl
+
+class BitbucketOps(BaseTfl):
+
+    def __init__(self, cmx: CMX = None, tfls=None, logger=None):
+        super().__init__(cmx=cmx, logger=logger, tfls=tfls)
+
+    @BaseTfl.step_wrapper(title="step_delete_integrations_by_prefix",
+                          error="Failed to delete integrations by prefix")
+    def step_delete_integrations_by_prefix(self, integration_prefix: str, **kwargs):
+        """
+        Navigate to Global Settings > Code Repository > Custom Integrations > Bitbucket, search for
+        integrations whose name starts with the prefix, and delete them one by one.
+        :return: None
+        """
+        self.logger.info(f"Deleting Bitbucket integrations with prefix {integration_prefix}")
+        page = self.cmx.ui.page
+        page.goto(f"{self.cmx.environment.server_url}/settings", wait_until="domcontentloaded")
+        page.get_by_role("link", name="Global Settings").click()
+        page.get_by_role("tab", name="Code Repository").click()
+        page.get_by_text("Custom Integrations").click()
+        page.get_by_text("Bitbucket").click()
+        for _ in range(10):
+            page.get_by_role("textbox", name="Search").fill(integration_prefix.rstrip("-"))
+            item = page.get_by_role("button", name=integration_prefix)
+            try:
+                item.first.wait_for(state="visible", timeout=5_000)
+            except Exception:
+                return
+            item.first.click()
+            page.locator('[data-test="ok"]').click()
+            page.wait_for_timeout(1_500)
+            self.logger.info("   Bitbucket integration deleted")
+
+    @BaseTfl.step_wrapper(title="step_delete_integration", error="Failed to delete integration")
+    def step_delete_integration(self, integration_name: str, **kwargs):
+        """
+        Navigate to Global Settings > Code Repository > Custom Integrations > Bitbucket, search for
+        the integration by exact name, and delete it.
+        :return: None
+        """
+        self.logger.info(f"Deleting Bitbucket integration {integration_name}")
+        page = self.cmx.ui.page
+        page.goto(f"{self.cmx.environment.server_url}/settings", wait_until="domcontentloaded")
+        page.get_by_role("link", name="Global Settings").click()
+        page.get_by_role("tab", name="Code Repository").click()
+        page.get_by_text("Custom Integrations").click()
+        page.get_by_text("Bitbucket").click()
+        page.get_by_role("textbox", name="Search").fill(integration_name)
+        item = page.get_by_role("button", name=integration_name)
+        try:
+            item.first.wait_for(state="visible", timeout=5_000)
+        except Exception:
+            return
+        item.first.click()
+        page.locator('[data-test="ok"]').click()
+        page.wait_for_timeout(1_500)
+        self.logger.info("   Bitbucket integration deleted")
+
+    @BaseTfl.step_wrapper(title="step_decline_open_prs", error="Failed to decline open PRs")
+    def step_decline_open_prs(self, bb_host: str, project_key: str, repo_slug: str, from_branch: str, to_branch: str,
+                              **kwargs):
+        """
+        List open PRs from from_branch to to_branch in the Bitbucket repository and decline them.
+        :return: None
+        """
+        self.logger.info(f"Declining open PRs from {from_branch} to {to_branch} in {project_key}/{repo_slug}")
+        api_base = f"http://{bb_host}/rest/api/1.0/projects/{project_key}/repos/{repo_slug}"
+        headers = bb_headers(self.cmx.environment.bitbucket_user, self.cmx.environment.bitbucket_password)
+        api = self.cmx.ui.page.request
+        list_result = list_open_prs(api, api_base, headers, from_branch, to_branch)
+        if list_result:
+            for pr in list_result:
+                decline_pr(api, api_base, headers, pr, self.logger)
+
+    @BaseTfl.step_wrapper(title="step_push_file_to_bitbucket", error="Failed to push file to Bitbucket")
+    def step_push_file_to_bitbucket(self, bb_host: str, project_key: str, repo_slug: str, filename: str, content: str,
+                                    branch: str, commit_message: str, **kwargs):
+        """
+        Push a file to the Bitbucket repository on the given branch via the REST API.
+        :return: None
+        """
+        self.logger.info(f"Pushing file {filename} to {branch} in {project_key}/{repo_slug}")
+        api_base = f"http://{bb_host}/rest/api/1.0/projects/{project_key}/repos/{repo_slug}"
+        headers = bb_headers(self.cmx.environment.bitbucket_user, self.cmx.environment.bitbucket_password)
+        api = self.cmx.ui.page.request
+        res = api.put(f"{api_base}/browse/{filename}", headers=headers,
+                      multipart={"content": {"name": filename, "mimeType": "text/plain", "buffer": content.encode()},
+                                 "message": commit_message, "branch": branch})
+        if res.status not in (200, 201):
+            raise RuntimeError(f"Push to {branch} failed: HTTP {res.status} {res.text()[:300]}")
+        self.logger.info(f"   pushed {filename} to {branch}")
+
+    @BaseTfl.step_wrapper(title="step_create_pull_request", error="Failed to create pull request")
+    def step_create_pull_request(self, bb_host: str, project_key: str, repo_slug: str, from_branch: str, to_branch: str,
+                                 title: str, **kwargs):
+        """
+        Create a pull request from from_branch to to_branch in the Bitbucket repository.
+        :return: pull request ID
+        """
+        self.logger.info(f"Creating PR from {from_branch} to {to_branch} in {project_key}/{repo_slug}")
+        api_base = f"http://{bb_host}/rest/api/1.0/projects/{project_key}/repos/{repo_slug}"
+        headers = bb_headers(self.cmx.environment.bitbucket_user, self.cmx.environment.bitbucket_password)
+        body = {"title": title, "description": "automated", "fromRef": ref(from_branch, repo_slug, project_key),
+                "toRef": ref(to_branch, repo_slug, project_key)}
+        api = self.cmx.ui.page.request
+        res = api.post(f"{api_base}/pull-requests", headers={**headers, "Content-Type": "application/json"},
+                       data=json.dumps(body))
+        if res.status not in [200, 201]:
+            raise RuntimeError(f"Create PR failed: HTTP {res.status} {res.text()[:300]}")
+        pr_id = res.json()["id"]
+        self.logger.info(f"   created PR #{pr_id}")
+        return pr_id
+
+    @BaseTfl.step_wrapper(title="step_merge_pull_request", error="Failed to merge pull request")
+    def step_merge_pull_request(self, bb_host: str, project_key: str, repo_slug: str, pr_id: int, **kwargs):
+        """
+        Merge the given pull request in the Bitbucket repository.
+        :return: None
+        """
+        self.logger.info(f"Merging PR #{pr_id} in {project_key}/{repo_slug}")
+        api_base = f"http://{bb_host}/rest/api/1.0/projects/{project_key}/repos/{repo_slug}"
+        headers = bb_headers(self.cmx.environment.bitbucket_user, self.cmx.environment.bitbucket_password)
+        api = self.cmx.ui.page.request
+        detail = api.get(f"{api_base}/pull-requests/{pr_id}", headers=headers)
+        version = detail.json()["version"]
+        res = api.post(f"{api_base}/pull-requests/{pr_id}/merge?version={version}", headers=headers)
+        if res.status not in [200, 201]:
+            raise RuntimeError(f"Merge PR failed: HTTP {res.status} {res.text()[:300]}")
+        self.logger.info(f"   merged PR #{pr_id}")
+
+    def ref(branch, repo_slug, project_key):
+        """
+        Build a Bitbucket ref object for the given branch.
+        :return: dict with ref structure
+        """
+        return {"id": f"refs/heads/{branch}", "repository": {"slug": repo_slug, "project": {"key": project_key}}}
+
+    def bb_headers(user, password):
+        """
+        Build the Authorization header for Bitbucket REST API calls.
+        :return: dict with Authorization header
+        """
+        try:
+            raw = f"{user}:{password}".encode()
+            return {"Authorization": "Basic " + base64.b64encode(raw).decode(), "X-Atlassian-Token": "no-check"}
+        except Exception as err:
+            raise RuntimeError(f"bb_headers failed: {str(err).splitlines()[0][:150]}")
+
+    def list_open_prs(api, api_base, headers, from_branch, to_branch):
+        """
+        List open PRs from from_branch to to_branch.
+        :return: list of matching PRs or None if failed
+        """
+        try:
+            res = api.get(f"{api_base}/pull-requests?state=OPEN&limit=50", headers=headers)
+            if res.status not in [200, 201]:
+                return None
+            return [pr for pr in res.json().get("values", [])
+                    if pr["fromRef"]["displayId"] == from_branch and pr["toRef"]["displayId"] == to_branch]
+        except Exception as err:
+            raise RuntimeError(f"list_open_prs failed: {str(err).splitlines()[0][:150]}")
+
+    def decline_pr(api, api_base, headers, pr, logger):
+        """
+        Decline a single PR.
+        :return: None
+        """
+        try:
+            api.post(f"{api_base}/pull-requests/{pr['id']}/decline?version={pr['version']}", headers=headers)
+            logger.info(f"   declined leftover PR #{pr['id']}")
+        except Exception as err:
+            logger.info(f"   (could not decline PR #{pr['id']}: {str(err).splitlines()[0][:140]})")
+
+===== FILE: tfls/ui/ui_tfls.py (APPEND — register new UI TFL classes) =====
+
+        self.scm = ScmTfls(cmx=cmx, tfls=tfls)
+        self.applications = ApplicationsTfls(cmx=cmx, tfls=tfls)
+        self.policy_management = PolicyManagementTfls(cmx=cmx, tfls=tfls)
+        self.feedback = FeedbackTfls(cmx=cmx, tfls=tfls)
+        self.reports = ReportsTfls(cmx=cmx, tfls=tfls)
+
+class ScmTfls(BaseTfl):
+    def __init__(self, cmx=None, tfls=None, logger=None):
+        super().__init__(cmx=cmx, logger=logger, tfls=tfls)
+        from tfls.ui.scm.bitbucket_import.bitbucket_import_ops import BitbucketImportOps
+        self.bitbucket_import = BitbucketImportOps(cmx=cmx, tfls=tfls)
+
+class ApplicationsTfls(BaseTfl):
+    def __init__(self, cmx=None, tfls=None, logger=None):
+        super().__init__(cmx=cmx, logger=logger, tfls=tfls)
+        from tfls.ui.applications.applications_ops import ApplicationsOps
+        self.applications_ops = ApplicationsOps(cmx=cmx, tfls=tfls)
+
+    def __getattr__(self, item):
+        return getattr(self.applications_ops, item)
+
+class PolicyManagementTfls(BaseTfl):
+    def __init__(self, cmx=None, tfls=None, logger=None):
+        super().__init__(cmx=cmx, logger=logger, tfls=tfls)
+        from tfls.ui.policy_management.policy_management_ops import PolicyManagementOps
+        self.policy_management_ops = PolicyManagementOps(cmx=cmx, tfls=tfls)
+
+    def __getattr__(self, item):
+        return getattr(self.policy_management_ops, item)
+
+class FeedbackTfls(BaseTfl):
+    def __init__(self, cmx=None, tfls=None, logger=None):
+        super().__init__(cmx=cmx, logger=logger, tfls=tfls)
+        from tfls.ui.feedback.feedback_ops import FeedbackOps
+        self.feedback_ops = FeedbackOps(cmx=cmx, tfls=tfls)
+
+    def __getattr__(self, item):
+        return getattr(self.feedback_ops, item)
+
+class ReportsTfls(BaseTfl):
+    def __init__(self, cmx=None, tfls=None, logger=None):
+        super().__init__(cmx=cmx, logger=logger, tfls=tfls)
+        from tfls.ui.reports.reports_ops import ReportsOps
+        self.reports_ops = ReportsOps(cmx=cmx, tfls=tfls)
+
+    def __getattr__(self, item):
+        return getattr(self.reports_ops, item)
+
+===== FILE: tfls/backend/backend_tfls.py (APPEND — register new BE TFL classes) =====
+
+        from tfls.backend.scm.bitbucket.bitbucket_ops import BitbucketOps
+        self.scm = ScmBackendTfls(cmx=cmx, tfls=tfls)
+
+class ScmBackendTfls(BaseTfl):
+    def __init__(self, cmx=None, tfls=None, logger=None):
+        super().__init__(cmx=cmx, logger=logger, tfls=tfls)
+        from tfls.backend.scm.bitbucket.bitbucket_ops import BitbucketOps
+        self.bitbucket = BitbucketOps(cmx=cmx, tfls=tfls)
+
+===== FILE: infra/cmx/environment.py (APPEND — new environment keys) =====
+
+        self.bitbucket_host = self._get_arg("bitbucket_host", os.environ.get("BB_HOST", "ec2-54-92-197-62.compute-1.amazonaws.com:7990"))
+        self.bitbucket_user = self._get_arg("bitbucket_user", os.environ.get("BB_USER"))
+        self.bitbucket_password = self._get_arg("bitbucket_password", os.environ.get("BB_PASSWORD"))
+        self.bitbucket_access_token = self._get_arg("bitbucket_access_token", os.environ.get("BB_ACCESS_TOKEN"))
+        self.feedback_email = self._get_arg("feedback_email", os.environ.get("FEEDBACK_EMAIL", "recipient@example.com"))
+
+===== FILE: tests/component_scm/bitbucket_onprem/init.py (New File) =====
+
+===== FILE: tests/component_scm/init.py (New File) =====
+
+===== FILE: tfls/ui/scm/init.py (New File) =====
+
+===== FILE: tfls/ui/scm/bitbucket_import/init.py (New File) =====
+
+===== FILE: tfls/ui/applications/init.py (New File) =====
+
+===== FILE: tfls/ui/policy_management/init.py (New File) =====
+
+===== FILE: tfls/ui/feedback/init.py (New File) =====
+
+===== FILE: tfls/ui/reports/init.py (New File) =====
+
+===== FILE: tfls/ui/projects/settings/init.py (New File) =====
+
+===== FILE: tfls/backend/scm/init.py (New Code Added Addition To An Existing File) =====
+
+===== FILE: tfls/backend/scm/bitbucket/init.py (New File) =====
